@@ -1,0 +1,13 @@
+# Test runner image
+FROM python:3.11-slim
+
+RUN useradd --create-home --shell /bin/bash tester
+WORKDIR /app
+
+COPY requirements.txt requirements-dev.txt ./
+RUN pip install --no-cache-dir -r requirements.txt -r requirements-dev.txt
+
+COPY . .
+USER tester
+
+CMD ["pytest", "tests/", "-v", "--cov=conduit", "--cov-report=xml", "--junitxml=junit.xml"]

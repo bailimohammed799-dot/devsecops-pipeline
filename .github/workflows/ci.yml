@@ -1,0 +1,183 @@
+name: CI Pipeline (Stages 1-5)
+
+on:
+  push:
+    branches: [main, master]
+  pull_request:
+    branches: [main, master]
+
+env:
+  TARGET_REPO: gothinkster/flask-realworld-example-app
+  TARGET_COMMIT: 4b95fb2227dfeb5dd1a45d89b2bf48630b93fd28
+  MIN_COVERAGE: 60
+
+jobs:
+  # ── Stage 1: Source retrieval & integrity ──────────────────
+  source-retrieval:
+    runs-on: ubuntu-22.04
+    outputs:
+      clone_dir: /tmp/conduit-app
+    steps:
+      - uses: actions/checkout@v4
+      - name: Clone target app
+        run: |
+          git clone "https://github.com/${{ env.TARGET_REPO }}.git" /tmp/conduit-app
+          cd /tmp/conduit-app
+          git checkout ${{ env.TARGET_COMMIT }}
+          echo "SHA=$(git rev-parse HEAD)" >> $GITHUB_ENV
+      - name: Verify commit SHA
+        run: |
+          if [ "$SHA" != "${{ env.TARGET_COMMIT }}" ]; then
+            echo "SHA mismatch! $SHA != ${{ env.TARGET_COMMIT }}"
+            exit 1
+          fi
+      - name: Gitleaks pre-scan
+        uses: gitleaks/gitleaks-action@v2
+        with:
+          source: /tmp/conduit-app
+      - name: Generate clone manifest
+        run: |
+          mkdir -p reports/01-source
+          echo "{\"repo\":\"${{ env.TARGET_REPO }}\",\"commit_sha\":\"$SHA\",\"license\":\"MIT\"}" > reports/01-source/clone-manifest.json
+      - name: Cache app source
+        uses: actions/cache/save@v4
+        with:
+          path: /tmp/conduit-app
+          key: conduit-${{ env.TARGET_COMMIT }}
+
+  # ── Stage 2: Build ────────────────────────────────────────
+  build:
+    needs: source-retrieval
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/cache/restore@v4
+        with:
+          path: /tmp/conduit-app
+          key: conduit-${{ env.TARGET_COMMIT }}
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Install dependencies
+        run: |
+          cd /tmp/conduit-app
+          pip install -r requirements.txt
+      - name: Verify build
+        run: |
+          cd /tmp/conduit-app
+          python -c "import conduit; print('Build OK')"
+      - name: Save build log
+        run: |
+          mkdir -p reports/02-build
+          echo '{"status":"success","stage":"build"}' > reports/02-build/build-status.json
+
+  # ── Stage 3: SonarQube ────────────────────────────────────
+  sonarqube:
+    needs: build
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/cache/restore@v4
+        with:
+          path: /tmp/conduit-app
+          key: conduit-${{ env.TARGET_COMMIT }}
+      - name: Start SonarQube
+        run: |
+          docker compose -f docker/docker-compose.yml up -d sonarqube
+          # Wait for SonarQube
+          for i in $(seq 1 60); do
+            STATUS=$(curl -s -o /dev/null -w "%{http_code}" http://localhost:9000/api/system/status || echo "000")
+            if [ "$STATUS" = "200" ]; then
+              UP=$(curl -s http://localhost:9000/api/system/status | python3 -c "import json,sys; print(json.load(sys.stdin).get('status',''))")
+              if [ "$UP" = "UP" ]; then echo "SonarQube UP"; break; fi
+            fi
+            sleep 5
+          done
+      - name: Run Sonar Scanner
+        env:
+          SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
+        run: |
+          sonar-scanner \
+            -Dsonar.host.url=http://localhost:9000 \
+            -Dsonar.login=$SONAR_TOKEN \
+            -Dsonar.projectKey=conduit \
+            -Dsonar.sources=/tmp/conduit-app/conduit \
+            -Dsonar.tests=/tmp/conduit-app/tests
+
+  # ── Stage 4: Unit tests & coverage ────────────────────────
+  unit-tests:
+    needs: build
+    runs-on: ubuntu-22.04
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: conduit
+          POSTGRES_PASSWORD: conduit_test
+          POSTGRES_DB: conduit_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/cache/restore@v4
+        with:
+          path: /tmp/conduit-app
+          key: conduit-${{ env.TARGET_COMMIT }}
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Install test deps
+        run: |
+          cd /tmp/conduit-app
+          pip install -r requirements.txt pytest pytest-cov
+      - name: Run tests
+        env:
+          DATABASE_URL: postgresql://conduit:***@localhost:5432/conduit_test
+          SECRET_KEY: test-secret-key
+        run: |
+          cd /tmp/conduit-app
+          python -m pytest tests/ -v --junitxml=junit.xml --cov=conduit --cov-report=xml:coverage.xml --cov-report=term
+      - name: Save reports
+        run: |
+          mkdir -p reports/04-tests
+          cp /tmp/conduit-app/junit.xml reports/04-tests/ || true
+          cp /tmp/conduit-app/coverage.xml reports/04-tests/ || true
+
+  # ── Stage 5: SAST ─────────────────────────────────────────
+  sast:
+    needs: build
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/cache/restore@v4
+        with:
+          path: /tmp/conduit-app
+          key: conduit-${{ env.TARGET_COMMIT }}
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Run Semgrep
+        run: |
+          pip install semgrep
+          semgrep scan --config p/owasp-top-ten --config p/python --sarif --output reports/05-sast/semgrep.sarif /tmp/conduit-app/conduit/ || true
+      - name: Run Bandit
+        run: |
+          pip install bandit
+          bandit -r /tmp/conduit-app/conduit/ -f json -o reports/05-sast/bandit.json || true
+      - name: Run Gitleaks
+        uses: gitleaks/gitleaks-action@v2
+        with:
+          source: /tmp/conduit-app
+      - name: Run pip-audit
+        run: |
+          pip install pip-audit
+          pip-audit -r /tmp/conduit-app/requirements.txt --format json --output reports/05-sast/pip-audit.json || true
+      - name: Upload SAST results to Code Scanning
+        uses: github/codeql-action/upload-sarif@v3
+        with:
+          sarif_file: reports/05-sast/semgrep.sarif

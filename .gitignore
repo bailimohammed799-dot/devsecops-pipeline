@@ -1,0 +1,51 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+dist/
+build/
+.eggs/
+*.egg
+venv/
+.venv/
+
+# Environment
+.env
+!.env.example
+
+# Reports (generated)
+reports/*/
+reports/**/*.log
+reports/**/*.json
+
+# Docker
+*.tar
+registry/
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+
+# SonarQube
+.scannerwork/
+
+# Trivy
+.trivy/
+
+# Gitleaks
+.gitleaks-report.json
+
+# Node (for any JS tooling)
+node_modules/
+package-lock.json
+
+# Temp
+/tmp/
+*.tmp

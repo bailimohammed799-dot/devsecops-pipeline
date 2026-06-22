@@ -1,0 +1,82 @@
+name: CD Pipeline (Stages 6-8)
+
+on:
+  push:
+    branches: [main, master]
+  workflow_run:
+    workflows: ["CI Pipeline (Stages 1-5)"]
+    types: [completed]
+
+env:
+  REGISTRY_URL: localhost:5000
+
+jobs:
+  # ── Stage 6: Image build & scan ───────────────────────────
+  image-build:
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build Docker image
+        run: |
+          docker build -t localhost:5000/conduit:latest \
+            --label "org.opencontainers.image.revision=${{ github.sha }}" \
+            --label "org.opencontainers.image.created=$(date -Iseconds)" \
+            -f docker/Dockerfile .
+      - name: Run Trivy scan
+        uses: aquasecurity/trivy-action@master
+        with:
+          image-ref: localhost:5000/conduit:latest
+          format: json
+          output: reports/06-image/trivy-image.json
+          severity: HIGH,CRITICAL
+      - name: Start local registry
+        run: docker run -d -p 5000:5000 --name registry registry:2
+      - name: Push image
+        run: docker push localhost:5000/conduit:latest
+
+  # ── Stage 7: Deploy ──────────────────────────────────────
+  deploy:
+    needs: image-build
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+      - name: Deploy with docker compose
+        run: |
+          docker compose -f docker/docker-compose.yml up -d
+      - name: Wait for health
+        run: |
+          for i in $(seq 1 30); do
+            CODE=$(curl -s -o /dev/null -w "%{http_code}" http://localhost:8080/api/ || echo "000")
+            if [ "$CODE" != "000" ]; then echo "App ready (HTTP $CODE)"; break; fi
+            sleep 5
+          done
+      - name: Smoke test
+        run: |
+          curl -s http://localhost:8080/api/ | head -c 200
+          curl -s -o /dev/null -w "Login: %{http_code}\n" -X POST http://localhost:8080/api/users/login \
+            -H "Content-Type: application/json" \
+            -d '{"user":{"email":"test@test.com","password":"test"}}'
+
+  # ── Stage 8: DAST ────────────────────────────────────────
+  dast:
+    needs: deploy
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+      - name: OWASP ZAP Baseline Scan
+        uses: zaproxy/action-baseline@v0.12.0
+        with:
+          target: http://localhost:8080
+          fail_action: false
+      - name: Run custom DAST scenarios
+        run: |
+          pip install requests
+          for script in tests/security/scenario_*.py; do
+            echo "=== Running $(basename $script) ==="
+            python3 "$script" --url http://localhost:8080 --output "reports/08-dast/scenarios/$(basename $script .py).md" || true
+          done
+      - name: Upload DAST reports
+        uses: actions/upload-artifact@v4
+        with:
+          name: dast-reports
+          path: reports/08-dast/

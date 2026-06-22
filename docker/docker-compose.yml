@@ -1,0 +1,87 @@
+version: "3.9"
+
+services:
+  # ── Database ──────────────────────────────────────────────
+  db:
+    image: postgres:16-alpine
+    container_name: conduit-db
+    environment:
+      POSTGRES_USER: conduit
+      POSTGRES_PASSWORD: conduit_dev_password
+      POSTGRES_DB: conduit
+    ports:
+      - "5432:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U conduit"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+    networks:
+      - conduit-net
+
+  # ── Application ────────────────────────────────────────────
+  app:
+    build:
+      context: /tmp/conduit-app
+      dockerfile: ../../docker/Dockerfile
+    container_name: conduit-app
+    ports:
+      - "8080:5000"
+    environment:
+      FLASK_APP: autoapp.py
+      FLASK_ENV: development
+      DATABASE_URL: postgresql://conduit:conduit_dev_password@db:5432/conduit
+      SECRET_KEY: pipeline-test-secret-key-change-in-production
+    depends_on:
+      db:
+        condition: service_healthy
+    networks:
+      - conduit-net
+    healthcheck:
+      test: ["CMD", "python", "-c", "from urllib.request import urlopen; urlopen('http://localhost:5000/api/healthz')"]
+      interval: 10s
+      timeout: 5s
+      retries: 20
+      start_period: 15s
+
+  # ── SonarQube ──────────────────────────────────────────────
+  sonarqube:
+    image: sonarqube:community
+    container_name: sonarqube
+    ports:
+      - "9000:9000"
+    environment:
+      SONAR_ES_BOOTSTRAP_CHECKS_DISABLE: "true"
+    volumes:
+      - sonarqube_data:/opt/sonarqube/data
+      - sonarqube_extensions:/opt/sonarqube/extensions
+      - sonarqube_logs:/opt/sonarqube/logs
+    networks:
+      - conduit-net
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:9000/api/system/status"]
+      interval: 10s
+      timeout: 10s
+      retries: 30
+      start_period: 60s
+
+  # ── Local Docker Registry ──────────────────────────────────
+  registry:
+    image: registry:2
+    container_name: registry
+    ports:
+      - "5000:5000"
+    networks:
+      - conduit-net
+
+volumes:
+  pgdata:
+  sonarqube_data:
+  sonarqube_extensions:
+  sonarqube_logs:
+
+networks:
+  conduit-net:
+    driver: bridge

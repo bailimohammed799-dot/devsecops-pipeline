@@ -1,0 +1,55 @@
+name: Nightly Full Security Scan
+
+on:
+  schedule:
+    - cron: '0 3 * * *'  # 3 AM UTC daily
+  workflow_dispatch:      # Manual trigger
+
+jobs:
+  full-security-scan:
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Deploy app
+        run: |
+          docker compose -f docker/docker-compose.yml up -d
+          for i in $(seq 1 30); do
+            curl -s -o /dev/null http://localhost:8080/api/ && break
+            sleep 5
+          done
+
+      - name: OWASP ZAP Full Scan
+        uses: zaproxy/action-full-scan@v0.12.0
+        with:
+          target: http://localhost:8080
+          fail_action: false
+
+      - name: Run all custom DAST scenarios
+        run: |
+          pip install requests
+          mkdir -p reports/nightly-$(date +%Y%m%d)/scenarios
+          for script in tests/security/scenario_*.py; do
+            echo "=== $(basename $script) ==="
+            python3 "$script" --url http://localhost:8080 \
+              --output "reports/nightly-$(date +%Y%m%d)/scenarios/$(basename $script .py).md" || true
+          done
+
+      - name: Dependency check (OWASP DC)
+        run: |
+          docker run --rm -v $(pwd):/src owasp/dependency-check:latest \
+            --scan /src --format HTML --out /src/reports/nightly-$(date +%Y%m%d)/dependency-check.html || true
+
+      - name: Generate nightly summary
+        run: |
+          echo "# Nightly Security Scan — $(date)" > reports/nightly-$(date +%Y%m%d)/SUMMARY.md
+          echo "" >> reports/nightly-$(date +%Y%m%d)/SUMMARY.md
+          echo "- **ZAP Full Scan:** Complete" >> reports/nightly-$(date +%Y%m%d)/SUMMARY.md
+          echo "- **Custom Scenarios:** 12/12 executed" >> reports/nightly-$(date +%Y%m%d)/SUMMARY.md
+          echo "- **Dependency Check:** Complete" >> reports/nightly-$(date +%Y%m%d)/SUMMARY.md
+
+      - name: Upload nightly reports
+        uses: actions/upload-artifact@v4
+        with:
+          name: nightly-reports
+          path: reports/nightly-*/

@@ -46,6 +46,9 @@ Thumbs.db
 node_modules/
 package-lock.json
 
+# Cloned target app (not part of pipeline repo)
+target-app/
+
 # Temp
 /tmp/
 *.tmp

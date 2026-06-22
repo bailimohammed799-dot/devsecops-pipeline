@@ -78,18 +78,6 @@ ls reports/$(ls -1t reports/ | head -1)/
 | [07-recommendations.md](docs/07-recommendations.md) | Prioritized remediation plan |
 | [decisions.md](docs/decisions.md) | Architecture Decision Records |
 
-## Rapports en Français (pour le stage)
-
-Des prompts détaillés sont fournis pour générer les rapports en français (utilisables avec GLM 5.2 ou autre IA) :
-
-| Fichier | Contenu |
-|---------|---------|
-| [reports/french/00-prompt-rapport-final.md](reports/french/00-prompt-rapport-final.md) | Rapport final du stage — vulnérabilités, impact, recommandations |
-| [reports/french/01-prompt-pipeline.md](reports/french/01-prompt-pipeline.md) | Documentation technique de la pipeline |
-| [reports/french/02-prompt-resultats-securite.md](reports/french/02-prompt-resultats-securite.md) | Résultats des analyses de sécurité |
-| [reports/french/03-prompt-recommandations.md](reports/french/03-prompt-recommandations.md) | Plan de remédiation priorisé |
-| [reports/french/04-prompt-reproduction.md](reports/french/04-prompt-reproduction.md) | Guide de reproduction pas à pas |
-
 ## Environment Variables
 
 Copy `.env.example` to `.env` and fill in:
